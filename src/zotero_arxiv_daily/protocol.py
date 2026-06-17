@@ -2,11 +2,40 @@ from dataclasses import dataclass
 from typing import Optional, TypeVar
 from datetime import datetime
 import re
+import time
 import tiktoken
-from openai import OpenAI
+from openai import OpenAI, RateLimitError
 from loguru import logger
 import json
 RawPaperItem = TypeVar('RawPaperItem')
+
+
+def _chat_completion_with_retry(openai_client: OpenAI, *, max_retries: int = 6, **kwargs):
+    """Call chat.completions.create, retrying on 429 rate limits with backoff.
+
+    Free LLM providers (e.g. OpenRouter free models) cap requests per minute and
+    answer bursts with HTTP 429. We wait (honoring X-RateLimit-Reset when present)
+    and retry so the run paces itself instead of dropping papers.
+    """
+    delay = 5
+    for attempt in range(max_retries + 1):
+        try:
+            return openai_client.chat.completions.create(**kwargs)
+        except RateLimitError as e:
+            if attempt >= max_retries:
+                raise
+            wait = delay
+            try:
+                reset = e.response.headers.get('X-RateLimit-Reset')
+                if reset:
+                    # OpenRouter returns the reset time as an epoch in milliseconds
+                    wait = int(int(reset) / 1000 - time.time()) + 1
+            except Exception:
+                pass
+            wait = max(1, min(wait, 60))
+            logger.info(f"Rate limited (429), retrying in {wait}s (attempt {attempt + 1}/{max_retries})")
+            time.sleep(wait)
+            delay = min(delay * 2, 60)
 
 @dataclass
 class Paper:
@@ -43,7 +72,8 @@ class Paper:
         prompt_tokens = prompt_tokens[:4000]  # truncate to 4000 tokens
         prompt = enc.decode(prompt_tokens)
         
-        response = openai_client.chat.completions.create(
+        response = _chat_completion_with_retry(
+            openai_client,
             messages=[
                 {
                     "role": "system",
@@ -75,7 +105,8 @@ class Paper:
             prompt_tokens = enc.encode(prompt)
             prompt_tokens = prompt_tokens[:2000]  # truncate to 2000 tokens
             prompt = enc.decode(prompt_tokens)
-            affiliations = openai_client.chat.completions.create(
+            affiliations = _chat_completion_with_retry(
+                openai_client,
                 messages=[
                     {
                         "role": "system",
