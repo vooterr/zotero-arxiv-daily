@@ -26,4 +26,4 @@ source:
 executor:
   debug: ${oc.env:DEBUG,null}
   source: ['arxiv']
-  max_paper_num: 20 # OpenRouter free tier ~50 requests/day; 2 requests/paper -> keep <=24
+  max_paper_num: 50 # With $10 OpenRouter credit free models allow ~1000 requests/day
